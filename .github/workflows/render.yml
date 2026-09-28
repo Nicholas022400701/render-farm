@@ -1,0 +1,175 @@
+name: render
+# 借这个公开仓库的免费渲染机器，渲染私有仓库里的片子。这里只有这份流程文件和一把公钥，没有任何内容。
+# 源码用你存进 Secrets 的令牌从私有仓库拉（Actions 会把令牌在日志里打码）；渲出来的段和成片都直接回到私有仓库的 Release，不在这里落地。
+# 只有给沙箱核对用的那一份成片会放进这里的 artifact，而且先用随机密钥加密、随机密钥再用下面这把公钥封住：任何人在这里能看到的只有密文。
+# 日志里不打印任何片子内容（字幕、标签、检查项都不输出），只打印通过/不通过和数字。
+on:
+  workflow_dispatch:
+    inputs:
+      comp:
+        description: 渲哪一集：Levers（第二集）或 Tutorial（第一集）
+        required: true
+        default: Levers
+        type: choice
+        options: [Levers, Tutorial]
+      release_tag:
+        description: 发到私有仓库的 Release 标签（例如 levers-4）
+        required: true
+        default: levers-4
+      reuse_parts_tag:
+        description: 复用私有仓库里某个临时 Release 的 20 段（例如 parts-Levers-36386834788），只做拼接与发布；留空则全部重新渲染
+        required: false
+        default: parts-Levers-36386834788
+      delete_tags:
+        description: 成功后顺手删掉私有仓库里的这些 Release（空格分开，例如 levers-3）；留空则不删
+        required: false
+        default: levers-3
+permissions:
+  contents: read
+env:
+  PRIVATE_REPO: Nicholas022400701/qf-figure6-tutorial-video
+  GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+  COMP: ${{ github.event.inputs.comp }}
+  RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+  REUSE: ${{ github.event.inputs.reuse_parts_tag }}
+  DELETE_TAGS: ${{ github.event.inputs.delete_tags }}
+  PARTS_TAG: parts-${{ github.event.inputs.comp }}-pub-${{ github.run_id }}
+  TOTAL: "44640"
+  PER: "2232"
+  PUBKEY_PEM: |
+    -----BEGIN PUBLIC KEY-----
+    MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEArCuPA7cqXxS6hjuLw944
+    SeSf1y9X48S8CQevLDwOPIonEiSsHP9pdRRIBKvp7qjsyjZPQeuAupckptAt2dLs
+    NN9NHfmqzyEjiiUCcTZ9++WgyspBVqnwljyKuJmFjNshgfGaYefOccLpHM8zPrJY
+    yHcJx44se0xwyVnLDDtsAh4+4xD3bLnv+QMUN2CK89LGubcXDNTkCre3INieg6Qw
+    wBvr3kLZINWpFY0+3ozJRrgFgYDdXUrukvY5M8CrcdwqrnNQ5Kfo33/Sr2P0SkuR
+    E4h13dGHA0jlgm81cBSAPwwebjO8pAyCYYcU4esxUTQBfcKoXkhd9BbMMNQC0aqB
+    qlrpE45XmqWLIPQ7v8yRCA5mNzJ0HgCTUjvrc7irATV0iUZhDXU65bR8IoTrFvRw
+    AZl58YlVWuyoNqiPpCg5uhWdZSJsymSjNFdweEuJnFBqQjcvihdyKwUaBrK1ysoE
+    M1pSKKZq+dWbdMKC1z9bymMalS57UEa2Jpc05caJvGXeB+MXdCDWFZ7kMyWi6fSt
+    vFnqFeeSK/FLv9PsXwG1gGrPAZqCr4hFEmJgS/oGUJDI484ipht3in+ics6ZhK0A
+    8VPe7cJZ8jYLDTlIBbdD7S/gMKAw1n4VxvjGM5m/5qDgbTYj1lYuX8cfVdIFoNwQ
+    V9GVL/xBSRSnIOXB45o6Yd0CAwEAAQ==
+    -----END PUBLIC KEY-----
+jobs:
+  check:
+    # 第一步：拉私有仓库的源码，做出画检查（只打印通过/不通过）。不通过就不渲染。要重新渲染时，在私有仓库建一个临时 Release 给 20 段当仓库
+    runs-on: ubuntu-latest
+    outputs:
+      src_sha: ${{ steps.src.outputs.sha }}
+    steps:
+      - name: 确认令牌在
+        run: test -n "$GH_TOKEN" || { echo "缺少 Secret PRIVATE_REPO_TOKEN（私有仓库的细粒度令牌，Contents 读写）"; exit 1; }
+      - name: 拉私有仓库的源码
+        id: src
+        run: |
+          gh repo clone "$PRIVATE_REPO" . -- --depth 1 --branch main --quiet || git clone --depth 1 --branch main --quiet "https://x-access-token:${GH_TOKEN}@github.com/${PRIVATE_REPO}.git" .
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "源提交 $(git rev-parse --short HEAD)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund --silent
+      - name: 出画检查（结果只打印通过/不通过）
+        run: |
+          case "$COMP" in Levers) c=tools/checkFraming5.ts;; Tutorial) c=tools/checkFraming4.ts;; *) echo "不认识的集：$COMP"; exit 1;; esac
+          if npx tsx "$c" > /dev/null 2>&1; then echo "出画检查：全部通过"; else echo "出画检查：有项目不通过，停止"; exit 1; fi
+      - name: 在私有仓库建临时 Release（存 20 段）
+        if: ${{ !github.event.inputs.reuse_parts_tag }}
+        run: gh release create "$PARTS_TAG" -R "$PRIVATE_REPO" --prerelease --title "临时：公开仓库第 ${{ github.run_number }} 次运行的 20 段（$COMP）" --notes "渲染成功后会自动删除。若这次运行失败，可在公开仓库手动运行时填 $PARTS_TAG 复用已渲好的段。" --target "${{ steps.src.outputs.sha }}"
+  render:
+    # 第二步：20 台机器各渲染 2232 帧（无声，3840×2160），每段渲完直接传回私有仓库的临时 Release
+    needs: check
+    if: ${{ !github.event.inputs.reuse_parts_tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - name: 拉私有仓库的源码
+        run: gh repo clone "$PRIVATE_REPO" . -- --depth 1 --branch main --quiet || git clone --depth 1 --branch main --quiet "https://x-access-token:${GH_TOKEN}@github.com/${PRIVATE_REPO}.git" .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund --silent
+      - name: 解码素材、生成音轨
+        run: |
+          mkdir -p public
+          for f in assets_b64/*.b64; do base64 -d "$f" > "public/$(basename "$f" .b64)"; done
+          case "$COMP" in Levers) g=tools/genAudio5.ts;; *) g=tools/genAudio4.ts;; esac
+          npx tsx "$g" > /dev/null 2>&1
+      - run: npx remotion browser ensure > /dev/null 2>&1
+      - name: 渲染本段（3840×2160）
+        run: |
+          a=$(( ${{ matrix.shard }} * PER )); b=$(( a + PER - 1 ))
+          echo "第 ${{ matrix.shard }} 段：帧 $a 到 $b，机器 $(nproc) 核"
+          npx remotion render src/index.ts "$COMP" "out/part-${{ matrix.shard }}.mp4" --frames="$a-$b" --scale=2 --codec=h264 --crf=21 --muted --gl=swangle --concurrency="$(nproc)" --timeout=120000 --log=error
+          ls -la out
+      - name: 传回私有仓库的临时 Release
+        run: |
+          for i in 1 2 3 4 5; do gh release upload "$PARTS_TAG" "out/part-${{ matrix.shard }}.mp4" -R "$PRIVATE_REPO" --clobber && break; echo "上传失败，第 $i 次重试"; sleep $(( i * 20 )); done
+          gh release view "$PARTS_TAG" -R "$PRIVATE_REPO" --json assets --jq '.assets[].name' | grep -qx "part-${{ matrix.shard }}.mp4"
+  assemble:
+    # 第三步：从私有仓库取回 20 段，拼接、合音轨、核对，发到私有仓库的 Release；再把加密的一份放进这里的 artifact 给沙箱核对
+    needs: [check, render]
+    if: ${{ always() && needs.check.result == 'success' && (needs.render.result == 'success' || needs.render.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉私有仓库的源码
+        run: gh repo clone "$PRIVATE_REPO" . -- --depth 1 --branch main --quiet || git clone --depth 1 --branch main --quiet "https://x-access-token:${GH_TOKEN}@github.com/${PRIVATE_REPO}.git" .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund --silent
+      - name: 生成音轨
+        run: |
+          mkdir -p public
+          case "$COMP" in Levers) g=tools/genAudio5.ts; echo "TRACK=track5.wav" >> "$GITHUB_ENV"; echo "OUT=levers.mp4" >> "$GITHUB_ENV"; echo "TITLE=第二集 · 四根拉杆是怎么来的（粗野派 · 平面 · 一个镜头 · 3840×2160 · 每秒 120 帧）" >> "$GITHUB_ENV";;
+                        *) g=tools/genAudio4.ts; echo "TRACK=track.wav" >> "$GITHUB_ENV"; echo "OUT=tutorial.mp4" >> "$GITHUB_ENV"; echo "TITLE=第一集 · Figure 6 复现教程（粗野派 · 平面 · 一个镜头 · 3840×2160 · 每秒 120 帧）" >> "$GITHUB_ENV";; esac
+          npx tsx "$g" > /dev/null 2>&1
+      - name: 从私有仓库取回 20 段
+        run: |
+          tag="${REUSE:-$PARTS_TAG}"; echo "segments_tag=$tag" >> "$GITHUB_ENV"
+          mkdir -p out/parts
+          gh release download "$tag" -R "$PRIVATE_REPO" -D out/parts -p 'part-*.mp4'
+          test "$(ls out/parts/part-*.mp4 | wc -l)" = "20"
+          du -sh out/parts
+      - name: 拼接 + 合音轨
+        run: |
+          : > out/parts/list.txt
+          for i in $(seq 0 19); do echo "file 'part-$i.mp4'" >> out/parts/list.txt; done
+          npx remotion ffmpeg -y -loglevel error -f concat -safe 0 -i out/parts/list.txt -c copy out/video.mp4
+          npx remotion ffmpeg -y -loglevel error -i out/video.mp4 -i "public/$TRACK" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 160k -shortest -movflags +faststart "out/$OUT"
+      - name: 核对（时长、帧数、宽高、帧率、大小、文件指纹）
+        run: |
+          npx remotion ffprobe -v error -show_entries format=duration,size:stream=codec_name,nb_frames,width,height,r_frame_rate -of default=nw=1 "out/$OUT" | tee out/probe.txt
+          sha256sum "out/$OUT" | tee out/sha256.txt
+          frames=$(npx remotion ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "out/$OUT" 2>/dev/null | grep -E '^[0-9]+$' | tail -1)
+          echo "数到的帧数：$frames"
+          test "$frames" = "$TOTAL"
+          grep -q '^width=3840$' out/probe.txt && grep -q '^height=2160$' out/probe.txt && grep -q '^r_frame_rate=120/1$' out/probe.txt
+      - name: 发到私有仓库的 Release
+        run: |
+          { echo "在公开仓库的免费机器上渲染（源码从私有仓库拉取，段和成片直接回到这里），源提交 ${{ needs.check.outputs.src_sha }}；3840×2160，每秒 120 帧，20 段并行；段来自 $segments_tag"; echo; echo '```'; cat out/probe.txt; cat out/sha256.txt; echo '```'; } > out/notes.md
+          gh release create "$RELEASE_TAG" "out/$OUT" -R "$PRIVATE_REPO" --title "$TITLE · $RELEASE_TAG" --notes-file out/notes.md --target "${{ needs.check.outputs.src_sha }}"
+      - name: 给沙箱核对用的一份：随机密钥加密成片，密钥用公钥封住
+        run: |
+          printf '%s\n' "$PUBKEY_PEM" > out/pub.pem
+          openssl rand -hex 32 > out/sk
+          openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt -pass file:out/sk -in "out/$OUT" -out "out/$OUT.enc"
+          openssl pkeyutl -encrypt -pubin -inkey out/pub.pem -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -in out/sk -out out/key.enc
+          rm -f out/sk
+          mkdir -p out/enc && mv "out/$OUT.enc" out/key.enc out/sha256.txt out/probe.txt out/enc/
+          ls -la out/enc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.release_tag }}-encrypted
+          path: out/enc
+          retention-days: 1
+          compression-level: 0
+      - name: 清理私有仓库：删临时 Release 和指定的旧 Release
+        run: |
+          for t in $(gh release list -R "$PRIVATE_REPO" --limit 200 --json tagName --jq '.[].tagName' | grep "^parts-$COMP-" || true); do echo "删除临时 $t"; gh release delete "$t" -R "$PRIVATE_REPO" --yes --cleanup-tag || true; done
+          for t in $DELETE_TAGS; do echo "删除 $t"; gh release delete "$t" -R "$PRIVATE_REPO" --yes --cleanup-tag || true; done
