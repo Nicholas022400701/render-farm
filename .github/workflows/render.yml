@@ -1,13 +1,14 @@
 name: render
 # 借这个公开仓库的免费机器渲染。仓库里只有加密后的源码包（bundle/），密钥在 Secrets 里叫 RENDER_KEY；
 # 机器上解开、渲染、把每一段和最后的成片都用同一把密钥加密后才放进 Release。日志只打印进度、帧数、指纹，不打印任何内容。
+# 第二集配音版：源码包里带口播（voice/voice.mp3），音轨在机器上合成；成片 65300 帧，9 分 04 秒。
 on:
   workflow_dispatch:
     inputs:
       release_tag:
         description: 成片 Release 的标签（里面是加密文件 <标签>.mp4.enc）
         required: true
-        default: levers-4
+        default: levers-5
       reuse_parts_tag:
         description: 复用某次运行留下的 20 段（临时 Release 的标签，形如 parts-123456），只重做拼接与发布；留空则全部重新渲染
         required: false
@@ -15,10 +16,10 @@ on:
 permissions:
   contents: write
 env:
-  TOTAL: "44640"
+  TOTAL: "65300"
   PARTS_TAG: parts-${{ github.run_id }}
-  # 20 段的帧区间（按上一次每段实际耗时重新划分，让每段的活差不多多）
-  RANGES: "0-5233 5234-7934 7935-9535 9536-10229 10230-10923 10924-11886 11887-12987 12988-14674 14675-19242 19243-24980 24981-26335 26336-27233 27234-27904 27905-28576 28577-29504 29505-30909 30910-33141 33142-35861 35862-37806 37807-44639"
+  # 20 段的帧区间：均分。八块小图改成先画进缓存再逐帧贴上去之后，每帧的耗时基本一样，不用再按耗时划分
+  RANGES: "0-3264 3265-6529 6530-9794 9795-13059 13060-16324 16325-19589 19590-22854 22855-26119 26120-29384 29385-32649 32650-35914 35915-39179 39180-42444 42445-45709 45710-48974 48975-52239 52240-55504 55505-58769 58770-62034 62035-65299"
 jobs:
   check:
     # 第一步：确认密钥在、能解开源码；出画检查（只打印通过与否）；建一个临时 Release 存加密的分段
@@ -60,11 +61,12 @@ jobs:
         with:
           node-version: 22
       - run: cd work && npm install --no-audit --no-fund
-      - name: 解码素材、生成音轨
+      - name: 解码素材、解开口播、生成音轨
         run: |
           cd work && mkdir -p public
           for f in assets_b64/*.b64; do base64 -d "$f" > "public/$(basename "$f" .b64)"; done
-          npx tsx tools/genAudio5.ts >/dev/null && echo "音轨已生成"
+          npx remotion ffmpeg -y -loglevel error -i voice/voice.mp3 -ar 44100 -ac 1 -sample_fmt s16 public/voice.wav
+          npx tsx tools/genAudio5.ts >/dev/null && echo "音轨已生成（含口播）"
       - run: cd work && npx remotion browser ensure
       - name: 渲染本段
         run: |
@@ -97,8 +99,11 @@ jobs:
         with:
           node-version: 22
       - run: cd work && npm install --no-audit --no-fund
-      - name: 生成音轨
-        run: cd work && mkdir -p public && npx tsx tools/genAudio5.ts >/dev/null && echo "音轨已生成"
+      - name: 解开口播、生成音轨
+        run: |
+          cd work && mkdir -p public
+          npx remotion ffmpeg -y -loglevel error -i voice/voice.mp3 -ar 44100 -ac 1 -sample_fmt s16 public/voice.wav
+          npx tsx tools/genAudio5.ts >/dev/null && echo "音轨已生成（含口播）"
       - name: 取回 20 段并解密
         env:
           RENDER_KEY: ${{ secrets.RENDER_KEY }}

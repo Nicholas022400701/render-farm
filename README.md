@@ -10,7 +10,7 @@
 
 ```
 export RENDER_KEY=（密钥）
-openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in levers-4.mp4.enc -out levers-4.mp4
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in levers-5.mp4.enc -out levers-5.mp4
 ```
 
 `sha256.txt` 里有解密后文件的指纹，可以核对。
