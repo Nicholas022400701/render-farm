@@ -116,18 +116,18 @@ jobs:
           test "$(ls out/parts/part-*.mp4.enc | wc -l)" = "20"
           for i in $(seq 0 19); do openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in "out/parts/part-$i.mp4.enc" -out "out/parts/part-$i.mp4"; done
           echo "20 段已解密"
-      - name: 拼接、合音轨
+      - name: 拼接、合音轨（不加 -shortest：音轨和画面本来等长，加了它会在编码器收尾时多裁掉几帧）
         run: |
           : > out/parts/list.txt
           for i in $(seq 0 19); do echo "file 'part-$i.mp4'" >> out/parts/list.txt; done
           cd work
           npx remotion ffmpeg -y -loglevel error -f concat -safe 0 -i ../out/parts/list.txt -c copy ../out/video.mp4
-          npx remotion ffmpeg -y -loglevel error -i ../out/video.mp4 -i public/track5.wav -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 160k -shortest -movflags +faststart ../out/final.mp4
+          npx remotion ffmpeg -y -loglevel error -i ../out/video.mp4 -i public/track5.wav -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 160k -movflags +faststart ../out/final.mp4
       - name: 核对（时长、帧数、大小、指纹）
         run: |
           cd work
           npx remotion ffprobe -v error -show_entries format=duration,size:stream=codec_name,nb_frames,width,height,r_frame_rate -of default=nw=1 ../out/final.mp4 | tee ../out/probe.txt
-          frames=$(npx remotion ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of default=nw=1:nk=1 ../out/final.mp4 2>/dev/null | grep -E '^[0-9]+$' | tail -1)
+          frames=$(npx remotion ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of default=nw=1:nk=1 ../out/final.mp4 2>/dev/null | grep -E '^[0-9]+$' | tail -1)
           echo "数出来的帧数：$frames"
           test "$frames" = "$TOTAL"
           grep -q '^width=3840$' ../out/probe.txt && grep -q '^height=2160$' ../out/probe.txt && grep -q '^r_frame_rate=120/1$' ../out/probe.txt
