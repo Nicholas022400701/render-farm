@@ -1,0 +1,139 @@
+name: slides
+# 借这个公开仓库的免费机器渲染答辩 deck 的三段片头动画（Remotion，Title→Scan→Chain 合成一段 Deck，900 帧，30 s）。
+# 仓库里只有加密后的源码包（slides/bundle/），密钥在 Secrets 里叫 RENDER_KEY；机器上解开、渲染、分段与成片都用同一把密钥加密后才放进 Release。
+# 日志只打印进度、帧数、指纹，不打印任何内容或文件名。与 render.yml（第二集）并列，互不影响。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 成片 Release 的标签（里面是加密文件 <标签>.mp4.enc）
+        required: true
+        default: deck-1
+      reuse_parts_tag:
+        description: 复用某次运行留下的分段（临时 Release 的标签，形如 slides-parts-123456），只重做拼接与发布；留空则全部重新渲染
+        required: false
+        default: ''
+permissions:
+  contents: write
+env:
+  TOTAL: "900"
+  PARTS_TAG: slides-parts-${{ github.run_id }}
+  # 2 段的帧区间：均分（每段 ≤ 600 帧）
+  RANGES: "0-449 450-899"
+jobs:
+  check:
+    # 第一步：确认密钥在、能解开源码；出画检查 = 能列出 Deck 组合（只打印通过与否）；建一个临时 Release 存加密的分段
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解开源码
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+        run: bash slides/open.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd work && npm install --no-audit --no-fund
+      - run: cd work && npx remotion browser ensure
+      - name: 出画检查
+        run: cd work && if npx remotion compositions src/index.ts --gl=swangle 2>/dev/null | grep -qE '^Deck +30 +1920x1080 +900 '; then echo "通过"; else echo "列不出 Deck 组合，停止"; exit 1; fi
+      - name: 建临时 Release（存分段，已加密）
+        if: ${{ !inputs.reuse_parts_tag }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$PARTS_TAG" --prerelease --title "临时 · slides 第 ${{ github.run_number }} 次运行的分段（已加密）" --notes "渲染成功后自动删除。若这次运行失败，手动运行时填 $PARTS_TAG 可复用已渲好的段。" --target "${{ github.sha }}"
+  render:
+    # 第二步：2 台机器各渲染一段（1920×1080，每秒 30 帧，无声），加密后存进临时 Release
+    needs: check
+    if: ${{ !inputs.reuse_parts_tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解开源码
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+        run: bash slides/open.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd work && npm install --no-audit --no-fund
+      - run: cd work && npx remotion browser ensure
+      - name: 渲染本段
+        run: |
+          r=$(echo "$RANGES" | tr ' ' '\n' | sed -n "$(( ${{ matrix.shard }} + 1 ))p")
+          echo "第 ${{ matrix.shard }} 段，帧 $r，$(nproc) 核"
+          mkdir -p out
+          cd work && npx remotion render src/index.ts Deck "../out/part-${{ matrix.shard }}.mp4" --frames="$r" --codec=h264 --crf=18 --muted --gl=swangle --concurrency=$(nproc) --timeout=120000 --log=warn
+      - name: 加密、存到临时 Release
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          i=${{ matrix.shard }}
+          bash farm/seal.sh "out/part-$i.mp4" "out/part-$i.mp4.enc" && rm -f "out/part-$i.mp4"
+          echo "加密后 $(stat -c %s out/part-$i.mp4.enc) 字节"
+          for n in 1 2 3 4 5; do gh release upload "$PARTS_TAG" "out/part-$i.mp4.enc" --clobber && break; echo "上传失败，第 $n 次重试"; sleep $(( n * 20 )); done
+          gh release view "$PARTS_TAG" --json assets --jq '.assets[].name' | grep -qx "part-$i.mp4.enc"
+  assemble:
+    # 第三步：取回 2 段、解密、按顺序接起来、核对帧数与分辨率，成片加密后发 Release，删临时 Release
+    needs: [check, render]
+    if: ${{ always() && needs.check.result == 'success' && (needs.render.result == 'success' || needs.render.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解开源码
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+        run: bash slides/open.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd work && npm install --no-audit --no-fund
+      - name: 取回分段并解密
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.reuse_parts_tag || env.PARTS_TAG }}"
+          echo "分段所在的临时 Release：$tag"
+          mkdir -p out/parts
+          gh release download "$tag" -D out/parts -p 'part-*.mp4.enc'
+          test "$(ls out/parts/part-*.mp4.enc | wc -l)" = "2"
+          for i in 0 1; do openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in "out/parts/part-$i.mp4.enc" -out "out/parts/part-$i.mp4"; done
+          echo "2 段已解密"
+      - name: 拼接
+        run: |
+          : > out/parts/list.txt
+          for i in 0 1; do echo "file 'part-$i.mp4'" >> out/parts/list.txt; done
+          cd work
+          npx remotion ffmpeg -y -loglevel error -f concat -safe 0 -i ../out/parts/list.txt -c copy -movflags +faststart ../out/final.mp4
+      - name: 核对（时长、帧数、大小、指纹）
+        run: |
+          cd work
+          npx remotion ffprobe -v error -show_entries format=duration,size:stream=codec_name,nb_frames,width,height,r_frame_rate -of default=nw=1 ../out/final.mp4 | tee ../out/probe.txt
+          frames=$(npx remotion ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of default=nw=1:nk=1 ../out/final.mp4 2>/dev/null | grep -E '^[0-9]+$' | tail -1)
+          echo "数出来的帧数：$frames"
+          test "$frames" = "$TOTAL"
+          grep -q '^width=1920$' ../out/probe.txt && grep -q '^height=1080$' ../out/probe.txt && grep -q '^r_frame_rate=30/1$' ../out/probe.txt
+      - name: 加密成片、发 Release
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.release_tag }}"
+          bash farm/seal.sh out/final.mp4 "out/$tag.mp4.enc"
+          { echo "$(sha256sum out/final.mp4 | cut -d' ' -f1)  $tag.mp4（解密后）"; echo "$(sha256sum "out/$tag.mp4.enc" | cut -d' ' -f1)  $tag.mp4.enc"; } > out/sha256.txt
+          cat out/sha256.txt
+          rm -f out/final.mp4 out/parts/part-*.mp4
+          { echo "已加密的成片。解密（密钥放在环境变量 RENDER_KEY 里）："; echo; echo '```'; echo "openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in $tag.mp4.enc -out $tag.mp4"; echo '```'; echo; echo "1920×1080，每秒 30 帧，$TOTAL 帧，2 段并行渲染于 slides 第 ${{ github.run_number }} 次运行。"; echo; echo '```'; cat out/probe.txt; cat out/sha256.txt; echo '```'; } > out/notes.md
+          gh release create "$tag" "out/$tag.mp4.enc" out/sha256.txt out/probe.txt --title "$tag（已加密）" --notes-file out/notes.md
+      - name: 删掉临时 Release（所有 slides-parts- 开头的）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for t in $(gh release list --limit 200 --json tagName --jq '.[].tagName' | grep '^slides-parts-' || true); do echo "删除 $t"; gh release delete "$t" --yes --cleanup-tag || true; done
