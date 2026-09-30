@@ -38,7 +38,11 @@ jobs:
           node-version: 22
       - run: cd work && npm install --no-audit --no-fund
       - name: 字形检查（源码里每个字都必须在内嵌字体里，levers-6 字幕缺字之后加的闸）
-        run: cd work && pip3 install -q fonttools >/dev/null 2>&1; python3 tools/fonts/checkGlyphs.py >/tmp/g.txt 2>&1; s=$?; tail -1 /tmp/g.txt; exit $s
+        # 机器镜像更新后 pip 直接装会被拒（PEP 668），加 --break-system-packages 再试；检查本身失败时也要把最后一行打出来再退出
+        run: |
+          cd work
+          (pip3 install -q fonttools || pip3 install -q --break-system-packages fonttools || python3 -m pip install -q --user fonttools) >/dev/null 2>&1 || true
+          if python3 tools/fonts/checkGlyphs.py >/tmp/g.txt 2>&1; then tail -1 /tmp/g.txt; else tail -1 /tmp/g.txt; exit 1; fi
       - name: 出画检查
         run: cd work && if npx tsx tools/checkFraming5.ts >/dev/null 2>&1; then echo "通过"; else echo "有不合格项，停止"; exit 1; fi
       - name: 建临时 Release（存 20 段，已加密）
