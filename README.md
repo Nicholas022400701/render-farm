@@ -10,7 +10,9 @@
 
 ```
 export RENDER_KEY=（密钥）
-openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in levers-8.mp4.enc -out levers-8.mp4
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in levers-9.mp4.enc -out levers-9.mp4
 ```
 
 `sha256.txt` 里有解密后文件的指纹，可以核对。
+
+成片一览：`levers-8` 第四稿（人话重写、换声音）；`levers-9` 第五稿（画面动作对到口播的词上，动作之间画面不动）。
