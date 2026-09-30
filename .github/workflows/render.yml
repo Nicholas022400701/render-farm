@@ -2,13 +2,14 @@ name: render
 # 借这个公开仓库的免费机器渲染。仓库里只有加密后的源码包（bundle/），密钥在 Secrets 里叫 RENDER_KEY；
 # 机器上解开、渲染、把每一段和最后的成片都用同一把密钥加密后才放进 Release。日志只打印进度、帧数、指纹，不打印任何内容。
 # 第二集配音版第四稿（人话重写、字幕字体补全、换声音云扬）：源码包里带口播（voice/voice.mp3），音轨在机器上合成；成片 165877 帧，23 分 2 秒。
+# levers-8：第 80 句字幕在 levers-7 里排成三行被裁，拆成两句（补丁包 bundle/patch-00.b64 覆盖在底包上，见 farm/open.sh）；帧数、口播、时间表不变。
 on:
   workflow_dispatch:
     inputs:
       release_tag:
         description: 成片 Release 的标签（里面是加密文件 <标签>.mp4.enc）
         required: true
-        default: levers-7
+        default: levers-8
       reuse_parts_tag:
         description: 复用某次运行留下的 20 段（临时 Release 的标签，形如 parts-123456），只重做拼接与发布；留空则全部重新渲染
         required: false
