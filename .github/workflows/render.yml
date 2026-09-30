@@ -1,14 +1,14 @@
 name: render
 # 借这个公开仓库的免费机器渲染。仓库里只有加密后的源码包（bundle/），密钥在 Secrets 里叫 RENDER_KEY；
 # 机器上解开、渲染、把每一段和最后的成片都用同一把密钥加密后才放进 Release。日志只打印进度、帧数、指纹，不打印任何内容。
-# 第二集配音版第三稿（讲全细节）：源码包里带口播（voice/voice.mp3），音轨在机器上合成；成片 119583 帧，16 分 37 秒。
+# 第二集配音版第四稿（人话重写、字幕字体补全、换声音云扬）：源码包里带口播（voice/voice.mp3），音轨在机器上合成；成片 165877 帧，23 分 2 秒。
 on:
   workflow_dispatch:
     inputs:
       release_tag:
         description: 成片 Release 的标签（里面是加密文件 <标签>.mp4.enc）
         required: true
-        default: levers-6
+        default: levers-7
       reuse_parts_tag:
         description: 复用某次运行留下的 20 段（临时 Release 的标签，形如 parts-123456），只重做拼接与发布；留空则全部重新渲染
         required: false
@@ -16,10 +16,10 @@ on:
 permissions:
   contents: write
 env:
-  TOTAL: "119583"
+  TOTAL: "165877"
   PARTS_TAG: parts-${{ github.run_id }}
   # 20 段的帧区间：均分。八块小图改成先画进缓存再逐帧贴上去之后，每帧的耗时基本一样，不用再按耗时划分
-  RANGES: "0-5978 5979-11957 11958-17936 17937-23915 23916-29894 29895-35873 35874-41852 41853-47831 47832-53810 53811-59789 59790-65768 65769-71747 71748-77726 77727-83705 83706-89684 89685-95663 95664-101642 101643-107621 107622-113600 113601-119582"
+  RANGES: "0-8293 8294-16587 16588-24881 24882-33175 33176-41469 41470-49763 49764-58057 58058-66351 66352-74645 74646-82939 82940-91233 91234-99527 99528-107821 107822-116115 116116-124409 124410-132703 132704-140997 140998-149290 149291-157583 157584-165876"
 jobs:
   check:
     # 第一步：确认密钥在、能解开源码；出画检查（只打印通过与否）；建一个临时 Release 存加密的分段
@@ -34,6 +34,8 @@ jobs:
         with:
           node-version: 22
       - run: cd work && npm install --no-audit --no-fund
+      - name: 字形检查（源码里每个字都必须在内嵌字体里，levers-6 字幕缺字之后加的闸）
+        run: cd work && pip3 install -q fonttools >/dev/null 2>&1; python3 tools/fonts/checkGlyphs.py >/tmp/g.txt 2>&1; s=$?; tail -1 /tmp/g.txt; exit $s
       - name: 出画检查
         run: cd work && if npx tsx tools/checkFraming5.ts >/dev/null 2>&1; then echo "通过"; else echo "有不合格项，停止"; exit 1; fi
       - name: 建临时 Release（存 20 段，已加密）
