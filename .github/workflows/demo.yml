@@ -10,7 +10,7 @@ on:
         required: true
         default: demo-1
       fps:
-        description: 成片帧率（截取的帧率够不上时会重复帧）
+        description: 成片帧率（抓屏也按这个帧率）
         required: false
         default: "60"
       threads:
@@ -38,7 +38,7 @@ jobs:
           pip install -q torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu || pip install -q torch --index-url https://download.pytorch.org/whl/cpu
           pip install -q "transformers==5.18.0" "sentence-transformers==6.1.0" "numpy==2.5.3" nltk websocket-client pillow || pip install -q transformers sentence-transformers numpy nltk websocket-client pillow
           sudo apt-get update -q >/dev/null 2>&1 || true
-          sudo apt-get install -y -q ffmpeg fonts-liberation imagemagick >/dev/null 2>&1 || sudo apt-get install -y -q ffmpeg
+          sudo apt-get install -y -q ffmpeg xvfb fonts-liberation imagemagick >/dev/null 2>&1 || sudo apt-get install -y -q ffmpeg xvfb
           python -c "import torch, transformers, sentence_transformers; print('torch', torch.__version__, 'transformers', transformers.__version__, 'sentence-transformers', sentence_transformers.__version__)"
       - name: 录制、合成、检查
         env:
@@ -46,6 +46,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           FPS: ${{ inputs.fps }}
+          CAPFPS: ${{ inputs.fps }}
           OMP_NUM_THREADS: ${{ inputs.threads }}
         run: cd work && bash run.sh
       - name: 加密结果、发 Release
