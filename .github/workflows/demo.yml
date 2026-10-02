@@ -1,0 +1,62 @@
+name: demo
+# 借这台机器录 QA-GNN-Lite 的演示视频：真实模型在本机答题，浏览器页面按脚本操作并逐帧截取（目标每秒 60 帧，比本地机器快得多），
+# 再定帧率、接旁白与字幕、加片头片尾、做检查。仓库里只有加密的录制包（demo/bundle/），密钥在 Secrets 里叫 RENDER_KEY；
+# 成片与全部日志用同一把密钥加密后才放进 Release。日志只打印进度、帧数、耗时、指纹，不打印任何内容或文件名。与 render.yml、slides.yml 并列。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 结果 Release 的标签（里面是加密文件 <标签>.tgz.enc，解开后是 mp4、检查图、日志）
+        required: true
+        default: demo-1
+      fps:
+        description: 成片帧率（截取的帧率够不上时会重复帧）
+        required: false
+        default: "60"
+      threads:
+        description: 答题模型用的线程数
+        required: false
+        default: "2"
+permissions:
+  contents: write
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解开录制包
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+        run: bash demo/open.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 装依赖
+        run: |
+          python -m pip install -q --upgrade pip
+          pip install -q torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu || pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -q "transformers==5.18.0" "sentence-transformers==6.1.0" "numpy==2.5.3" nltk websocket-client pillow || pip install -q transformers sentence-transformers numpy nltk websocket-client pillow
+          sudo apt-get install -y -q fonts-liberation >/dev/null 2>&1 || true
+          python -c "import torch, transformers, sentence_transformers; print('torch', torch.__version__, 'transformers', transformers.__version__, 'sentence-transformers', sentence_transformers.__version__)"
+      - name: 录制、合成、检查
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FPS: ${{ inputs.fps }}
+          OMP_NUM_THREADS: ${{ inputs.threads }}
+        run: cd work && bash run.sh
+      - name: 加密结果、发 Release
+        if: always()
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.release_tag }}"
+          mkdir -p work/out && tar czf "$tag.tgz" -C work/out .
+          bash farm/seal.sh "$tag.tgz" "$tag.tgz.enc"
+          { echo "$(sha256sum "$tag.tgz" | cut -d' ' -f1)  $tag.tgz（解密后）"; echo "$(sha256sum "$tag.tgz.enc" | cut -d' ' -f1)  $tag.tgz.enc"; } > sha256.txt
+          cat sha256.txt
+          { echo "已加密的录制结果（成片 mp4、检查图、日志）。解密（密钥放在环境变量 RENDER_KEY 里）："; echo; echo '```'; echo "openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in $tag.tgz.enc -out $tag.tgz && tar xzf $tag.tgz"; echo '```'; echo; echo "demo 第 ${{ github.run_number }} 次运行，录制步骤状态：${{ job.status }}，目标帧率 ${{ inputs.fps }}。"; echo; echo '```'; cat sha256.txt; echo '```'; } > notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then gh release upload "$tag" "$tag.tgz.enc" sha256.txt --clobber && gh release edit "$tag" --notes-file notes.md; else gh release create "$tag" "$tag.tgz.enc" sha256.txt --title "$tag（已加密）" --notes-file notes.md --target "${{ github.sha }}"; fi
