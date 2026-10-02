@@ -17,6 +17,10 @@ on:
         description: 答题模型用的线程数
         required: false
         default: "2"
+      mode:
+        description: record = 录制成片；diag = 只做帧率诊断（不出片）
+        required: false
+        default: record
 permissions:
   contents: write
 jobs:
@@ -48,6 +52,7 @@ jobs:
           FPS: ${{ inputs.fps }}
           CAPFPS: ${{ inputs.fps }}
           OMP_NUM_THREADS: ${{ inputs.threads }}
+          MODE: ${{ inputs.mode }}
         run: cd work && bash run.sh
       - name: 加密结果、发 Release
         if: always()
