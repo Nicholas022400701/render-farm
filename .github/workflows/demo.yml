@@ -37,7 +37,8 @@ jobs:
           python -m pip install -q --upgrade pip
           pip install -q torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu || pip install -q torch --index-url https://download.pytorch.org/whl/cpu
           pip install -q "transformers==5.18.0" "sentence-transformers==6.1.0" "numpy==2.5.3" nltk websocket-client pillow || pip install -q transformers sentence-transformers numpy nltk websocket-client pillow
-          sudo apt-get install -y -q fonts-liberation >/dev/null 2>&1 || true
+          sudo apt-get update -q >/dev/null 2>&1 || true
+          sudo apt-get install -y -q ffmpeg fonts-liberation imagemagick >/dev/null 2>&1 || sudo apt-get install -y -q ffmpeg
           python -c "import torch, transformers, sentence_transformers; print('torch', torch.__version__, 'transformers', transformers.__version__, 'sentence-transformers', sentence_transformers.__version__)"
       - name: 录制、合成、检查
         env:
