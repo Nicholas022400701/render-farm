@@ -28,6 +28,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release delete "${{ inputs.delete_tag }}" --yes --cleanup-tag && echo "已删除 ${{ inputs.delete_tag }}"
+      - name: 装 ffmpeg（机器镜像里没有）
+        if: ${{ inputs.delete_tag == '' }}
+        run: sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq ffmpeg >/dev/null && ffmpeg -version | head -1
       - name: 取回、解密、转一份 1080p
         if: ${{ inputs.delete_tag == '' }}
         env:
