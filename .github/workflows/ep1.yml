@@ -1,0 +1,151 @@
+name: ep1
+# 「跑一遍就知道 · 第 1 集 · 为什么富的越富」。借这个公开仓库的免费机器渲染：仓库里只有加密后的源码包（ep1/bundle/），密钥在 Secrets 里叫 RENDER_KEY；
+# 机器上解开、渲染、分段与成片都用同一把密钥加密后才放进 Release。日志只打印进度、帧数、指纹，不打印任何内容或文件名。
+# 画面是 Remotion 组合 Ep1：1920×1080 设计稿，--scale=2 出 3840×2160，每秒 120 帧，共 20433 帧（2 分 50 秒）。字幕与口播按词对时；
+# 片中数字全部由模拟（src/sim.ts）在渲染时现场算出。口播十段 mp3 在源码包里（public/vo/），音轨在 assemble 一步按同一张时间表（src/timeline.json）合成。
+# 字体：三个字重的 Noto Sans SC 子集随包内嵌（public/fonts/），所以机器上不装中文字体也能渲；字形检查保证源码里每个字都在子集里。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 成片 Release 的标签（里面是加密文件 <标签>.mp4.enc）
+        required: true
+        default: ep1-1
+      reuse_parts_tag:
+        description: 复用某次运行留下的 20 段（临时 Release 的标签，形如 ep1-parts-123456），只重做拼接与发布；留空则全部重新渲染
+        required: false
+        default: ''
+permissions:
+  contents: write
+env:
+  TOTAL: "20433"
+  PARTS_TAG: ep1-parts-${{ github.run_id }}
+  # 20 段的帧区间：均分，每段 1022 帧
+  RANGES: "0-1021 1022-2043 2044-3065 3066-4087 4088-5109 5110-6131 6132-7153 7154-8175 8176-9197 9198-10219 10220-11241 11242-12263 12264-13285 13286-14307 14308-15329 15330-16351 16352-17373 17374-18395 18396-19417 19418-20432"
+jobs:
+  check:
+    # 第一步：确认密钥在、能解开源码；字形检查；出画检查 = 能列出 Ep1 组合且帧数、帧率、尺寸对；建一个临时 Release 存加密的分段
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解开源码
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+        run: bash ep1/open.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd work && npm install --no-audit --no-fund
+      - name: 字形检查（源码与口播文本里的每个字都必须在内嵌字体里）
+        run: |
+          cd work
+          (pip3 install -q fonttools || pip3 install -q --break-system-packages fonttools || python3 -m pip install -q --user fonttools) >/dev/null 2>&1 || true
+          if python3 tools/checkGlyphs.py >/tmp/g.txt 2>&1; then tail -1 /tmp/g.txt; else tail -1 /tmp/g.txt; exit 1; fi
+      - run: cd work && npx remotion browser ensure
+      - name: 出画检查
+        run: cd work && if npx remotion compositions src/index.ts --gl=swangle 2>/dev/null | grep -qE "^Ep1 +120 +1920x1080 +$TOTAL "; then echo "通过"; else echo "列不出 Ep1 组合或帧数不对，停止"; exit 1; fi
+      - name: 建临时 Release（存 20 段，已加密）
+        if: ${{ !inputs.reuse_parts_tag }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$PARTS_TAG" --prerelease --title "临时 · ep1 第 ${{ github.run_number }} 次运行的分段（已加密）" --notes "渲染成功后自动删除。若这次运行失败，手动运行时填 $PARTS_TAG 可复用已渲好的段。" --target "${{ github.sha }}"
+  render:
+    # 第二步：20 台机器各渲染一段（3840×2160，每秒 120 帧，无声），加密后存进临时 Release。某一段偶然失败不拖累别的段：在 Actions 页面点「重跑失败的任务」即可只补那一段
+    needs: check
+    if: ${{ !inputs.reuse_parts_tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解开源码
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+        run: bash ep1/open.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd work && npm install --no-audit --no-fund
+      - run: cd work && npx remotion browser ensure
+      - name: 渲染本段
+        run: |
+          r=$(echo "$RANGES" | tr ' ' '\n' | sed -n "$(( ${{ matrix.shard }} + 1 ))p")
+          echo "第 ${{ matrix.shard }} 段，帧 $r，$(nproc) 核"
+          mkdir -p out
+          cd work && npx remotion render src/index.ts Ep1 "../out/part-${{ matrix.shard }}.mp4" --frames="$r" --scale=2 --codec=h264 --crf=21 --muted --gl=swangle --concurrency=$(nproc) --timeout=120000 --log=warn
+      - name: 加密、存到临时 Release
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          i=${{ matrix.shard }}
+          bash farm/seal.sh "out/part-$i.mp4" "out/part-$i.mp4.enc" && rm -f "out/part-$i.mp4"
+          echo "加密后 $(stat -c %s out/part-$i.mp4.enc) 字节"
+          for n in 1 2 3 4 5; do gh release upload "$PARTS_TAG" "out/part-$i.mp4.enc" --clobber && break; echo "上传失败，第 $n 次重试"; sleep $(( n * 20 )); done
+          gh release view "$PARTS_TAG" --json assets --jq '.assets[].name' | grep -qx "part-$i.mp4.enc"
+  assemble:
+    # 第三步：取回 20 段、解密、按顺序接起来、合上口播音轨、核对帧数与分辨率，成片加密后发 Release，删临时 Release
+    needs: [check, render]
+    if: ${{ always() && needs.check.result == 'success' && (needs.render.result == 'success' || needs.render.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解开源码
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+        run: bash ep1/open.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd work && npm install --no-audit --no-fund
+      - name: 合成口播音轨（十段 mp3 按时间表摆到一条 44.1 kHz 单声道 WAV 上）
+        run: |
+          mkdir -p out
+          cd work && node tools/buildTrack.mjs ../out/track.wav "npx remotion ffmpeg"
+      - name: 取回 20 段并解密
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.reuse_parts_tag || env.PARTS_TAG }}"
+          echo "分段所在的临时 Release：$tag"
+          mkdir -p out/parts
+          gh release download "$tag" -D out/parts -p 'part-*.mp4.enc'
+          test "$(ls out/parts/part-*.mp4.enc | wc -l)" = "20"
+          for i in $(seq 0 19); do openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in "out/parts/part-$i.mp4.enc" -out "out/parts/part-$i.mp4"; done
+          echo "20 段已解密"
+      - name: 拼接、合音轨（不加 -shortest：音轨按同一张时间表生成，与画面等长）
+        run: |
+          : > out/parts/list.txt
+          for i in $(seq 0 19); do echo "file 'part-$i.mp4'" >> out/parts/list.txt; done
+          cd work
+          npx remotion ffmpeg -y -loglevel error -f concat -safe 0 -i ../out/parts/list.txt -c copy ../out/video.mp4
+          npx remotion ffmpeg -y -loglevel error -i ../out/video.mp4 -i ../out/track.wav -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 160k -movflags +faststart ../out/final.mp4
+      - name: 核对（时长、帧数、大小、指纹）
+        run: |
+          cd work
+          npx remotion ffprobe -v error -show_entries format=duration,size:stream=codec_name,nb_frames,width,height,r_frame_rate -of default=nw=1 ../out/final.mp4 | tee ../out/probe.txt
+          frames=$(npx remotion ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of default=nw=1:nk=1 ../out/final.mp4 2>/dev/null | grep -E '^[0-9]+$' | tail -1)
+          echo "数出来的帧数：$frames"
+          test "$frames" = "$TOTAL"
+          grep -q '^width=3840$' ../out/probe.txt && grep -q '^height=2160$' ../out/probe.txt && grep -q '^r_frame_rate=120/1$' ../out/probe.txt
+      - name: 加密成片、发 Release
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.release_tag }}"
+          bash farm/seal.sh out/final.mp4 "out/$tag.mp4.enc"
+          { echo "$(sha256sum out/final.mp4 | cut -d' ' -f1)  $tag.mp4（解密后）"; echo "$(sha256sum "out/$tag.mp4.enc" | cut -d' ' -f1)  $tag.mp4.enc"; } > out/sha256.txt
+          cat out/sha256.txt
+          rm -f out/final.mp4 out/video.mp4 out/parts/part-*.mp4
+          { echo "已加密的成片。解密（密钥放在环境变量 RENDER_KEY 里）："; echo; echo '```'; echo "openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in $tag.mp4.enc -out $tag.mp4"; echo '```'; echo; echo "3840×2160，每秒 120 帧，$TOTAL 帧，20 段并行渲染于 ep1 第 ${{ github.run_number }} 次运行。"; echo; echo '```'; cat out/probe.txt; cat out/sha256.txt; echo '```'; } > out/notes.md
+          gh release create "$tag" "out/$tag.mp4.enc" out/sha256.txt out/probe.txt --title "$tag（已加密）" --notes-file out/notes.md
+      - name: 删掉临时 Release（所有 ep1-parts- 开头的）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for t in $(gh release list --limit 200 --json tagName --jq '.[].tagName' | grep '^ep1-parts-' || true); do echo "删除 $t"; gh release delete "$t" --yes --cleanup-tag || true; done
