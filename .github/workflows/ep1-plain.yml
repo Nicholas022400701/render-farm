@@ -1,0 +1,52 @@
+name: ep1-plain
+# 把某个加密成片解开成明文 mp4 发到一个公开 Release（给没法在本机解密的时候下载用），另附一份 1080p 版。
+# 下载完请删掉：再跑一次本工作流，把 delete_tag 填成那个明文 Release 的标签即可。
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: 加密成片所在的 Release 标签（里面有 <标签>.mp4.enc）
+        required: true
+        default: ep1-1
+      plain_tag:
+        description: 明文成片要发到的 Release 标签
+        required: true
+        default: ep1-1-plain
+      delete_tag:
+        description: 只删除这个标签的 Release（填了就只做删除，不发布）
+        required: false
+        default: ''
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 删除
+        if: ${{ inputs.delete_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "${{ inputs.delete_tag }}" --yes --cleanup-tag && echo "已删除 ${{ inputs.delete_tag }}"
+      - name: 取回、解密、转一份 1080p
+        if: ${{ inputs.delete_tag == '' }}
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          src="${{ inputs.source_tag }}"
+          mkdir -p out
+          gh release download "$src" -p "$src.mp4.enc" -D out
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass env:RENDER_KEY -in "out/$src.mp4.enc" -out "out/$src.mp4"
+          ffmpeg -v error -y -i "out/$src.mp4" -vf scale=1920:1080 -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p -c:a copy -movflags +faststart "out/$src-1080p120.mp4"
+          ffprobe -v error -show_entries format=duration,size:stream=codec_name,width,height,r_frame_rate -of default=nw=1 "out/$src.mp4" | tee out/probe.txt
+          { echo "$(sha256sum "out/$src.mp4" | cut -d' ' -f1)  $src.mp4"; echo "$(sha256sum "out/$src-1080p120.mp4" | cut -d' ' -f1)  $src-1080p120.mp4"; } | tee out/sha256.txt
+      - name: 发公开 Release
+        if: ${{ inputs.delete_tag == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          src="${{ inputs.source_tag }}"; tag="${{ inputs.plain_tag }}"
+          { echo "明文成片（未加密）。下载完建议删掉这个 Release：再跑 ep1-plain 工作流，delete_tag 填 $tag。"; echo; echo '```'; cat out/probe.txt; cat out/sha256.txt; echo '```'; } > out/notes.md
+          gh release create "$tag" "out/$src.mp4" "out/$src-1080p120.mp4" out/sha256.txt --title "$tag（明文成片）" --notes-file out/notes.md
+          echo "https://github.com/${{ github.repository }}/releases/tag/$tag"
